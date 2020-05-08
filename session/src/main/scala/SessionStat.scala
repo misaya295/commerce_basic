@@ -3,17 +3,17 @@ import java.util.{Date, UUID}
 import commons.conf.ConfigurationManager
 import commons.constant.Constants
 import commons.model.{UserInfo, UserVisitAction}
-import commons.utils.{DateUtils, ParamUtils, StringUtils, ValidUtils}
+import commons.utils.{DateUtils, NumberUtils, ParamUtils, StringUtils, ValidUtils}
 import net.sf.json.JSONObject
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 
+import scala.collection.mutable
+
 object SessionStat {
 
-
   def main(args: Array[String]): Unit = {
-
 
     //获取筛选条件
     val jsonStr = ConfigurationManager.config.getString(Constants.TASK_PARAMS)
@@ -31,6 +31,9 @@ object SessionStat {
     //创建sparkSession（包含SparkContext）
     val sparkSession: SparkSession = SparkSession.builder().config(sparkConf).enableHiveSupport().getOrCreate()
 
+    val sessionAccumulator = new SessionAccumulator
+    sparkSession.sparkContext.register(sessionAccumulator)
+
     //获取原始的动作表数据
     val actionRDD = getOriActionRDD(sparkSession, taskParam)
 
@@ -43,19 +46,112 @@ object SessionStat {
     //session2GroupActionRDD:RDD[(sessionId,itreable_UserVisitAction)]
     val session2GroupActionRDD: RDD[(String, Iterable[UserVisitAction])] = sessionId2ActionRDD.groupByKey()
 
+
     session2GroupActionRDD.cache()
 
 
     val sessionId2FullInfoRDD = getSessionFullInfo(sparkSession, session2GroupActionRDD)
 
-    val sessionId2FilterRDD = getSessionFilteredRDD(taskParam, sessionId2FullInfoRDD)
+    //sessionId2FilterRDD[(sessionId,fullInfo)]是所有符合过滤条件的数据组成的RDD
+    //getSessionFilteredRDD：实现根据限制条件对session数据进行guol，并完成累加器更新
+    val sessionId2FilterRDD = getSessionFilteredRDD(taskParam, sessionId2FullInfoRDD,sessionAccumulator)
 
     sessionId2FilterRDD.foreach(println(_))
 
+
+    getSessionRatio(sparkSession,taskUUID,sessionAccumulator.value)
+
   }
 
-  def getSessionFilteredRDD(taskParam: JSONObject, sessionId2FullInfoRDD: RDD[(String, String)]) = {
 
+
+  def getSessionRatio(sparkSession: SparkSession, taskUUID: String, value: mutable.HashMap[String, Int]): Unit = {
+
+
+    val session_count = value.getOrElse(Constants.SESSION_COUNT, 1).toDouble
+    val visitLength_1s_3s = value.getOrElse(Constants.TIME_PERIOD_1s_3s, 0)
+    val visitLength_4s_6s = value.getOrElse(Constants.TIME_PERIOD_4s_6s, 0)
+    val visitLength_7s_9s = value.getOrElse(Constants.TIME_PERIOD_7s_9s, 0)
+    val visitLength_10s_30s = value.getOrElse(Constants.TIME_PERIOD_10s_30s, 0)
+    val visitLength_30s_60s = value.getOrElse(Constants.TIME_PERIOD_30s_60s, 0)
+    val visitLength_1m_3m = value.getOrElse(Constants.TIME_PERIOD_1m_3m, 0)
+    val visitLength_3m_10m = value.getOrElse(Constants.TIME_PERIOD_3m_10m, 0)
+    val visitLength_10m_30m = value.getOrElse(Constants.TIME_PERIOD_10m_30m, 0)
+    val visitLength_30m = value.getOrElse(Constants.TIME_PERIOD_30m, 0)
+
+
+    val stepLength_1_3 = value.getOrElse(Constants.STEP_PERIOD_1_3, 0)
+    val stepLength_4_6 = value.getOrElse(Constants.STEP_PERIOD_4_6, 0)
+    val stepLength_7_9 = value.getOrElse(Constants.STEP_PERIOD_7_9, 0)
+    val stepLength_10_30 = value.getOrElse(Constants.STEP_PERIOD_10_30, 0)
+    val stepLength_30_60 = value.getOrElse(Constants.STEP_PERIOD_30_60, 0)
+    val stepLength_60 = value.getOrElse(Constants.STEP_PERIOD_60, 0)
+
+
+    val visitLength_1s_3s_ratio = NumberUtils.formatDouble(visitLength_1s_3s / session_count, 2)
+    val visitLength_4s_6s_ratio = NumberUtils.formatDouble(visitLength_4s_6s / session_count, 2)
+    val visitLength_7s_9s_ratio = NumberUtils.formatDouble(visitLength_7s_9s / session_count, 2)
+    val visitLength_10s_30s_ratio = NumberUtils.formatDouble(visitLength_10s_30s / session_count, 2)
+    val visitLength_30s_60s_ratio = NumberUtils.formatDouble(visitLength_30s_60s / session_count, 2)
+    val visitLength_1m_3m_ratio = NumberUtils.formatDouble(visitLength_1m_3m / session_count, 2)
+    val visitLength_3m_10m_ratio = NumberUtils.formatDouble(visitLength_3m_10m / session_count, 2)
+    val visitLength_10m_30m_ratio = NumberUtils.formatDouble(visitLength_10m_30m / session_count, 2)
+    val visitLength_30m_ratio = NumberUtils.formatDouble(visitLength_30m / session_count, 2)
+
+
+    val stepLength_1_3_ratio = NumberUtils.formatDouble(stepLength_1_3 / session_count, 2)
+    val stepLength_4_6_ratio = NumberUtils.formatDouble(stepLength_4_6 / session_count, 2)
+    val stepLength_7_9_ratio = NumberUtils.formatDouble(stepLength_7_9 / session_count, 2)
+    val stepLength_10_30_ratio = NumberUtils.formatDouble(stepLength_10_30 / session_count, 2)
+    val stepLength_30_60_ratio = NumberUtils.formatDouble(stepLength_30_60 / session_count, 2)
+    val stepLength_60_ratio = NumberUtils.formatDouble(stepLength_60 / session_count, 2)
+
+
+    val stat = SessionAggrStat(taskUUID, session_count.toInt, visitLength_1s_3s_ratio,
+      visitLength_4s_6s_ratio, visitLength_7s_9s_ratio, visitLength_10s_30s_ratio, visitLength_30s_60s_ratio,
+      visitLength_1m_3m_ratio, visitLength_3m_10m_ratio, visitLength_10m_30m_ratio, visitLength_30m_ratio, stepLength_1_3_ratio, stepLength_4_6_ratio
+      , stepLength_7_9_ratio, stepLength_10_30_ratio, stepLength_30_60_ratio, stepLength_60_ratio)
+
+
+    val sessionRatioRDD = sparkSession.sparkContext.makeRDD(Array(stat))
+
+    import sparkSession.implicits._
+    sessionRatioRDD.toDF().write
+      .format("jdbc")
+      .option("url", ConfigurationManager.config.getString(Constants.JDBC_URL))
+      .option("user", ConfigurationManager.config.getString(Constants.JDBC_USER))
+      .option("password", ConfigurationManager.config.getString(Constants.JDBC_PASSWORD))
+      .option("dbtable","session_stat_ratio")
+      .save()
+
+
+  }
+
+  def calculateVisitLength(vistrLength: Long, sessionAccumulator: SessionAccumulator) = {
+
+
+    if (vistrLength >=1 && vistrLength <=3) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_1s_3s)
+    }
+    else if (vistrLength >= 7 && vistrLength <=9) {sessionAccumulator.add(Constants.TIME_PERIOD_7s_9s)}
+    else if (vistrLength >= 10 && vistrLength <=30) {sessionAccumulator.add(Constants.TIME_PERIOD_10s_30s)}
+    else if (vistrLength >= 30 && vistrLength <=60) {sessionAccumulator.add(Constants.TIME_PERIOD_30s_60s)}
+    else if (vistrLength >= 60 && vistrLength <=180) {sessionAccumulator.add(Constants.TIME_PERIOD_1m_3m)}
+    else if (vistrLength >= 180 && vistrLength <=600) {sessionAccumulator.add(Constants.TIME_PERIOD_3m_10m)}
+    else if (vistrLength >= 600 && vistrLength <=1800) {sessionAccumulator.add(Constants.TIME_PERIOD_10m_30m)}
+    else if (vistrLength > 1800) {sessionAccumulator.add(Constants.TIME_PERIOD_30m)}
+    }
+
+  def calculateStepLength(stepLength: Long, sessionAccumulator: SessionAccumulator) = {
+    if (stepLength >=1 && stepLength <=3) {sessionAccumulator.add(Constants.STEP_PERIOD_1_3)}
+    else if (stepLength >=4 && stepLength <=6) {sessionAccumulator.add(Constants.STEP_PERIOD_4_6)}
+    else if (stepLength >=7 && stepLength <=9) {sessionAccumulator.add(Constants.STEP_PERIOD_7_9)}
+    else if (stepLength >=10 && stepLength <=30) {sessionAccumulator.add(Constants.STEP_PERIOD_10_30)}
+    else if (stepLength >=30 && stepLength <=60) {sessionAccumulator.add(Constants.STEP_PERIOD_30_60)}
+    else if (stepLength > 60) {sessionAccumulator.add(Constants.STEP_PERIOD_60)}
+  }
+
+  def getSessionFilteredRDD(taskParam: JSONObject, sessionId2FullInfoRDD: RDD[(String, String)], sessionAccumulator: SessionAccumulator) = {
 
     val startAge = ParamUtils.getParam(taskParam, Constants.PARAM_START_AGE)
     val endAge = ParamUtils.getParam(taskParam, Constants.PARAM_END_AGE)
@@ -102,6 +198,16 @@ object SessionStat {
           if (sucess) {
 
             //acc.add()
+            sessionAccumulator.add(Constants.SESSION_COUNT)
+
+
+            val vistrLength = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_VISIT_LENGTH).toLong
+            val stepLength = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_STEP_LENGTH).toLong
+
+
+            calculateVisitLength(vistrLength, sessionAccumulator)
+            calculateStepLength(stepLength, sessionAccumulator)
+
 
           }
 
