@@ -7,11 +7,14 @@ import commons.utils.{DateUtils, NumberUtils, ParamUtils, StringUtils, ValidUtil
 import net.sf.json.JSONObject
 import org.apache.spark.SparkConf
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.{SaveMode, SparkSession}
 
 import scala.collection.mutable
+import scala.collection.mutable.{ArrayBuffer, ListBuffer}
+import scala.util.Random
 
 object SessionStat {
+
 
   def main(args: Array[String]): Unit = {
 
@@ -54,12 +57,211 @@ object SessionStat {
 
     //sessionId2FilterRDD[(sessionId,fullInfo)]是所有符合过滤条件的数据组成的RDD
     //getSessionFilteredRDD：实现根据限制条件对session数据进行guol，并完成累加器更新
+    //过滤用户信息
     val sessionId2FilterRDD = getSessionFilteredRDD(taskParam, sessionId2FullInfoRDD,sessionAccumulator)
+
 
     sessionId2FilterRDD.foreach(println(_))
 
 
+    //获取最后再难过统计结果
     getSessionRatio(sparkSession,taskUUID,sessionAccumulator.value)
+
+
+    /**
+     * 需求二:session随机抽取
+    //sessionId2FilterRDD[(sessionId,fullInfo)],一个session对应一条数据
+     */
+    sessionRandomExtarct(sparkSession,taskUUID,sessionId2FilterRDD)
+
+
+
+
+
+  }
+
+  def generateRandomIndexList(extarctPerDay:Long,daySessionCount:Long,hourCountMap:mutable.HashMap[String,Long],
+                              hourListMap:mutable.HashMap[String,ListBuffer[Int]]): Unit = {
+
+    for ((hour,count) <- hourCountMap) {
+
+
+      var hourExrCount = ((count / daySessionCount.toDouble) * extarctPerDay).toInt
+
+      //避免一个小时要抽取的数量超过这个小时的总数
+      if (hourExrCount > count) {
+
+        hourExrCount = count.toInt
+
+      }
+
+      val random = new Random()
+
+      hourListMap.get(hour) match {
+        case None => hourListMap(hour) = new ListBuffer[Int]
+          for (i <- 0 until hourExrCount) {
+
+
+            var index = random.nextInt(count.toInt)
+
+            while(hourListMap(hour).contains(index)){
+              index = random.nextInt(count.toInt)
+
+            }
+
+            hourListMap(hour).append(index)
+          }
+
+        case Some(list) =>
+          for (i <- 0 until hourExrCount) {
+
+
+            var index = random.nextInt(count.toInt)
+
+            while(hourListMap(hour).contains(index)){
+              index = random.nextInt(count.toInt)
+
+            }
+
+            hourListMap(hour).append(index)
+          }
+      }
+    }
+
+
+  }
+
+
+  def sessionRandomExtarct(sparkSession: SparkSession, taskUUID: String, sessionId2FilterRDD: RDD[(String, String)]): Unit = {
+
+    //dateHour2FullInfoRDD[(dateHour,fullInfo)]
+    val dateHour2FullInfoRDD: RDD[(String, String)] = sessionId2FilterRDD.map {
+
+      case (sessionId, fullInfo) =>
+
+        val startTime = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_START_TIME)
+
+        //dateHour:yyyy-MM-dd_HH
+        val dateHour = DateUtils.getDateHour(startTime)
+
+        (dateHour, fullInfo)
+
+
+    }
+
+    //hourCountMap:Map[(dateHour,count)]
+    val hourCountMap = dateHour2FullInfoRDD.countByKey()
+
+    //fateHourCountMap:Map[(date,Map[(hour,count)])]
+    val dateHourCountMap = new mutable.HashMap[String, mutable.HashMap[String,Long]]()
+
+
+    for ((dateHour,count) <- hourCountMap) {
+
+
+      val date = dateHour.split("_")(0)
+      val hour = dateHour.split("_")(1)
+
+
+      dateHourCountMap.get(date) match {
+
+
+        case None => dateHourCountMap(date) = new mutable.HashMap[String,Long]()
+          dateHourCountMap(date) += (hour -> count)
+
+        case Some(map) => dateHourCountMap(date) += (hour -> count)
+      }
+
+
+    }
+
+    //解决问题一：一共有多少天：dataHourCountMap.size
+    //          一天抽取多少条：100
+    val extractPerDay = 100 / dateHourCountMap.size
+
+    //解决问题二：一天有多少session:dataHourCountMap(date).value.sum
+    //解决问题三：一小时有多少session：dateHourCountMap(date)(hour)
+
+    val dataHourExtractIndexListMap = new mutable.HashMap[String, mutable.HashMap[String, ListBuffer[Int]]]()
+
+    //dateHourCountMap:Map([date,Map[(hour,count)])
+    for ((date,hourCountMap)  <- dateHourCountMap) {
+
+
+
+
+      val dateSessionCount = hourCountMap.values.sum
+
+      dataHourExtractIndexListMap.get(date) match {
+        case None => dataHourExtractIndexListMap(date) = new mutable.HashMap[String, ListBuffer[Int]]()
+
+          generateRandomIndexList(extractPerDay,dateSessionCount,hourCountMap,dataHourExtractIndexListMap(date))
+
+        case Some(map) =>
+          generateRandomIndexList(extractPerDay,dateSessionCount,hourCountMap,dataHourExtractIndexListMap(date))
+
+      }
+
+      //到目前为止，我们获得了每个小时要抽取的session的index
+      //广播大变量，提升任务性能
+      val dataHourExtractIndexListMapBd = sparkSession.sparkContext.broadcast(dataHourExtractIndexListMap)
+
+      //dateHour2FullInfoRDD:RDD[(dateHour,fullInfo)]
+      //dateHour2GroupRDD:RDD[(dateHour,iterableFullInfo)]
+      val dateHour2GroupRDD: RDD[(String, Iterable[String])] = dateHour2FullInfoRDD.groupByKey()
+      //extractSessionRDD
+     val extractSessionRDD =  dateHour2GroupRDD.flatMap{
+
+        case (dateHour,iterableFullInfo) =>
+          val date = dateHour.split("_")(0)
+          val hour = dateHour.split("_")(1)
+
+
+          val extractList = dataHourExtractIndexListMapBd.value.get(date).get(hour)
+
+          val extractSessionArrayBuffer = new ArrayBuffer[SessionRandomExtract]()
+
+          var index = 0
+
+          for (fullInfo <- iterableFullInfo) {
+
+
+            if (extractList.contains(index)) {
+
+            val sessionId = StringUtils.getFieldFromConcatString(fullInfo,"\\|",Constants.FIELD_SESSION_ID)
+
+            val startTime = StringUtils.getFieldFromConcatString(fullInfo,"\\|",Constants.FIELD_START_TIME)
+
+
+            val searchKeywords = StringUtils.getFieldFromConcatString(fullInfo,"\\|",Constants.FIELD_SEARCH_KEYWORDS)
+
+            val clickCategories = StringUtils.getFieldFromConcatString(fullInfo,"\\|",Constants.FIELD_CLICK_CATEGORY_IDS)
+
+
+            val extractSession = SessionRandomExtract(taskUUID,sessionId,startTime,searchKeywords,clickCategories)
+
+
+              extractSessionArrayBuffer += extractSession
+            }
+
+            index += 1
+
+          }
+          extractSessionArrayBuffer
+
+
+      }
+      import sparkSession.implicits._
+      extractSessionRDD.toDF().write
+        .format("jdbc")
+        .option("url", ConfigurationManager.config.getString(Constants.JDBC_URL))
+        .option("user", ConfigurationManager.config.getString(Constants.JDBC_USER))
+        .option("password", ConfigurationManager.config.getString(Constants.JDBC_PASSWORD))
+        .option("dbtable","session_extract")
+        .mode(SaveMode.Append)
+        .save()
+    }
+
 
   }
 
@@ -116,13 +318,14 @@ object SessionStat {
     val sessionRatioRDD = sparkSession.sparkContext.makeRDD(Array(stat))
 
     import sparkSession.implicits._
-    sessionRatioRDD.toDF().write
-      .format("jdbc")
-      .option("url", ConfigurationManager.config.getString(Constants.JDBC_URL))
-      .option("user", ConfigurationManager.config.getString(Constants.JDBC_USER))
-      .option("password", ConfigurationManager.config.getString(Constants.JDBC_PASSWORD))
-      .option("dbtable","session_stat_ratio")
-      .save()
+//    sessionRatioRDD.toDF().write
+//      .format("jdbc")
+//      .option("url", ConfigurationManager.config.getString(Constants.JDBC_URL))
+//      .option("user", ConfigurationManager.config.getString(Constants.JDBC_USER))
+//      .option("password", ConfigurationManager.config.getString(Constants.JDBC_PASSWORD))
+//      .option("dbtable","session_stat_ratio")
+//      .mode(SaveMode.ErrorIfExists)
+//      .save()
 
 
   }
