@@ -16,6 +16,7 @@ import scala.util.Random
 object SessionStat {
 
 
+
   def main(args: Array[String]): Unit = {
 
     //获取筛选条件
@@ -75,10 +76,136 @@ object SessionStat {
     sessionRandomExtarct(sparkSession,taskUUID,sessionId2FilterRDD)
 
 
+    //sessionId2ActionRDD:RDD[(sessionId,action)]
+    //sessionIdFilterRDD:RDD[(sessionId,FullInfo)]
+    //sessionId2FilterActionRDD.join
+    val sessionIdFilterActionRDD = sessionId2ActionRDD.join(sessionId2FilterRDD).map{
 
+
+      case (sessionId,(action,fullInfo)) =>
+        (sessionId,action)
+    }
+
+
+    top10PopularCategories(sparkSession,taskUUID,sessionId2ActionRDD)
+
+  }
+
+
+  def getClickCount(sessionIdFilterActionRDD: RDD[(String, UserVisitAction)]) = {
+
+//    val clickFilterRDD = sessionIdFilterActionRDD.filter{
+//
+//      case (sessionId,action) => action.click_category_id != -1L
+//
+//
+//
+//    }
+
+    val clickFilterRDD =
+      sessionIdFilterActionRDD.filter(item => item._2.click_category_id != -1L)
+
+    val clickNumRDD = clickFilterRDD.map{
+
+
+
+      case (sessionId,action) =>(action.click_category_id,1L)
+
+
+    }
+
+    clickNumRDD.reduceByKey(_+_)
+
+  }
+
+  def getOrderCount(sessionIdFilterActionRDD: RDD[(String, UserVisitAction)]) = {
+    val orderFilterRDD = sessionIdFilterActionRDD.filter(item => item._2.order_category_ids != null)
+
+    val orderNumRDD = orderFilterRDD.flatMap{
+
+      case (sessionId,action) => action.order_category_ids.split(",").map(item => (item.toLong, 1L))
+
+
+    }
+
+    orderNumRDD.reduceByKey(_+_)
 
 
   }
+
+  def getPayCount(sessionIdFilterActionRDD: RDD[(String, UserVisitAction)]) =
+
+    {
+      val payFilterRDD = sessionIdFilterActionRDD.filter(item => item._2.pay_category_ids != null)
+
+
+      val payNumRDD = payFilterRDD.flatMap{
+
+        case (sid,acito) =>
+          acito.pay_category_ids.split(",").map(item => (item.toLong,1L))
+
+
+
+      }
+
+      payNumRDD.reduceByKey(_+_)
+
+      }
+
+
+  def top10PopularCategories(sparkSession: SparkSession, taskUUID: String,
+                             sessionIdFilterActionRDD: RDD[(String, UserVisitAction)]): Unit =
+  {
+
+    //第一步：获取所有发生过点击，下单，付款的品类
+
+
+    var cid2CidRDD = sessionIdFilterActionRDD.flatMap {
+
+
+      case (sid, action) =>
+        val categoryBuffer = new ArrayBuffer[(Long, Long)]()
+
+        //点击行为
+        if (action.click_category_id != -1) {
+          categoryBuffer += ((action.click_category_id, action.click_category_id))
+
+        } else if (action.click_category_id != null) {
+
+          for (orderCid <- action.order_category_ids) {
+            for (orderCid <- action.order_category_ids.split(",")) {
+              categoryBuffer += ((orderCid.toLong, orderCid.toLong))
+            }
+
+          }
+
+        } else if (action.order_category_ids != null) {
+          for (paycid <- action.pay_category_ids.split(",")) {
+            categoryBuffer += ((paycid.toLong, paycid.toLong))
+          }
+        }
+
+        categoryBuffer
+
+
+    }
+    cid2CidRDD = cid2CidRDD.distinct()
+    
+    //第二步：统计品类点击次数,下单次数,付款次数
+    val cid2ClickCountRDD = getClickCount(sessionIdFilterActionRDD)
+
+
+
+    val cid2OrderCountRDD = getOrderCount(sessionIdFilterActionRDD)
+
+
+    val cid2PayCountRDD = getPayCount(sessionIdFilterActionRDD)
+
+    cid2ClickCountRDD.foreach(println(_))
+
+  }
+
+
 
   def generateRandomIndexList(extarctPerDay:Long,daySessionCount:Long,hourCountMap:mutable.HashMap[String,Long],
                               hourListMap:mutable.HashMap[String,ListBuffer[Int]]): Unit = {
