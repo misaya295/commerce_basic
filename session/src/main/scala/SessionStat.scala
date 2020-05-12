@@ -16,7 +16,6 @@ import scala.util.Random
 object SessionStat {
 
 
-
   def main(args: Array[String]): Unit = {
 
     //获取筛选条件
@@ -59,103 +58,100 @@ object SessionStat {
     //sessionId2FilterRDD[(sessionId,fullInfo)]是所有符合过滤条件的数据组成的RDD
     //getSessionFilteredRDD：实现根据限制条件对session数据进行guol，并完成累加器更新
     //过滤用户信息
-    val sessionId2FilterRDD = getSessionFilteredRDD(taskParam, sessionId2FullInfoRDD,sessionAccumulator)
+    val sessionId2FilterRDD = getSessionFilteredRDD(taskParam, sessionId2FullInfoRDD, sessionAccumulator)
 
 
-    sessionId2FilterRDD.foreach(println(_))
+    //    sessionId2FilterRDD.foreach(println(_))
 
 
     //获取最后再难过统计结果
-    getSessionRatio(sparkSession,taskUUID,sessionAccumulator.value)
+    getSessionRatio(sparkSession, taskUUID, sessionAccumulator.value)
 
 
     /**
      * 需求二:session随机抽取
-    //sessionId2FilterRDD[(sessionId,fullInfo)],一个session对应一条数据
+     * //sessionId2FilterRDD[(sessionId,fullInfo)],一个session对应一条数据
      */
-    sessionRandomExtarct(sparkSession,taskUUID,sessionId2FilterRDD)
+    sessionRandomExtarct(sparkSession, taskUUID, sessionId2FilterRDD)
 
 
     //sessionId2ActionRDD:RDD[(sessionId,action)]
     //sessionIdFilterRDD:RDD[(sessionId,FullInfo)]
     //sessionId2FilterActionRDD.join
-    val sessionIdFilterActionRDD = sessionId2ActionRDD.join(sessionId2FilterRDD).map{
+    val sessionIdFilterActionRDD = sessionId2ActionRDD.join(sessionId2FilterRDD).map {
 
 
-      case (sessionId,(action,fullInfo)) =>
-        (sessionId,action)
+      case (sessionId, (action, fullInfo)) =>
+        (sessionId, action)
     }
 
 
-    top10PopularCategories(sparkSession,taskUUID,sessionId2ActionRDD)
+    top10PopularCategories(sparkSession, taskUUID, sessionId2ActionRDD)
 
   }
 
 
   def getClickCount(sessionIdFilterActionRDD: RDD[(String, UserVisitAction)]) = {
 
-//    val clickFilterRDD = sessionIdFilterActionRDD.filter{
-//
-//      case (sessionId,action) => action.click_category_id != -1L
-//
-//
-//
-//    }
+    //    val clickFilterRDD = sessionIdFilterActionRDD.filter{
+    //
+    //      case (sessionId,action) => action.click_category_id != -1L
+    //
+    //
+    //
+    //    }
 
+    //先进行过滤，把点击行为对应的action保留下来
     val clickFilterRDD =
       sessionIdFilterActionRDD.filter(item => item._2.click_category_id != -1L)
 
-    val clickNumRDD = clickFilterRDD.map{
+    //进行格式转换，为reduceByKey做准备
+    val clickNumRDD = clickFilterRDD.map {
 
 
-
-      case (sessionId,action) =>(action.click_category_id,1L)
+      case (sessionId, action) => (action.click_category_id, 1L)
 
 
     }
 
-    clickNumRDD.reduceByKey(_+_)
+    clickNumRDD.reduceByKey(_ + _)
 
   }
 
   def getOrderCount(sessionIdFilterActionRDD: RDD[(String, UserVisitAction)]) = {
     val orderFilterRDD = sessionIdFilterActionRDD.filter(item => item._2.order_category_ids != null)
 
-    val orderNumRDD = orderFilterRDD.flatMap{
+    val orderNumRDD = orderFilterRDD.flatMap {
 
-      case (sessionId,action) => action.order_category_ids.split(",").map(item => (item.toLong, 1L))
+      case (sessionId, action) => action.order_category_ids.split(",").map(item => (item.toLong, 1L))
 
 
     }
 
-    orderNumRDD.reduceByKey(_+_)
+    orderNumRDD.reduceByKey(_ + _)
 
 
   }
 
-  def getPayCount(sessionIdFilterActionRDD: RDD[(String, UserVisitAction)]) =
-
-    {
-      val payFilterRDD = sessionIdFilterActionRDD.filter(item => item._2.pay_category_ids != null)
+  def getPayCount(sessionIdFilterActionRDD: RDD[(String, UserVisitAction)]) = {
+    val payFilterRDD = sessionIdFilterActionRDD.filter(item => item._2.pay_category_ids != null)
 
 
-      val payNumRDD = payFilterRDD.flatMap{
+    val payNumRDD = payFilterRDD.flatMap {
 
-        case (sid,acito) =>
-          acito.pay_category_ids.split(",").map(item => (item.toLong,1L))
+      case (sid, acito) =>
+        acito.pay_category_ids.split(",").map(item => (item.toLong, 1L))
 
 
+    }
 
-      }
+    payNumRDD.reduceByKey(_ + _)
 
-      payNumRDD.reduceByKey(_+_)
-
-      }
+  }
 
 
   def top10PopularCategories(sparkSession: SparkSession, taskUUID: String,
-                             sessionIdFilterActionRDD: RDD[(String, UserVisitAction)]): Unit =
-  {
+                             sessionIdFilterActionRDD: RDD[(String, UserVisitAction)]): Unit = {
 
     //第一步：获取所有发生过点击，下单，付款的品类
 
@@ -170,9 +166,10 @@ object SessionStat {
         if (action.click_category_id != -1) {
           categoryBuffer += ((action.click_category_id, action.click_category_id))
 
-        } else if (action.click_category_id != null) {
+        } else if (action.order_category_ids != null) {
 
           for (orderCid <- action.order_category_ids) {
+
             for (orderCid <- action.order_category_ids.split(",")) {
               categoryBuffer += ((orderCid.toLong, orderCid.toLong))
             }
@@ -190,27 +187,116 @@ object SessionStat {
 
     }
     cid2CidRDD = cid2CidRDD.distinct()
-    
+
     //第二步：统计品类点击次数,下单次数,付款次数
     val cid2ClickCountRDD = getClickCount(sessionIdFilterActionRDD)
-
 
 
     val cid2OrderCountRDD = getOrderCount(sessionIdFilterActionRDD)
 
 
     val cid2PayCountRDD = getPayCount(sessionIdFilterActionRDD)
+    //cid2FullCountRDD[(cid,countInfo)]
+    //(16,categoryid=16|clickCount=149|orderCount=136|payCount=139)
+    val cid2FullCountRDD = getFullCount(cid2CidRDD, cid2ClickCountRDD, cid2OrderCountRDD, cid2PayCountRDD)
 
-    cid2ClickCountRDD.foreach(println(_))
+
+    //实现自定义二次排序key
+    val sortKey2FullCountRDD: RDD[(SortKey, String)] = cid2FullCountRDD.map {
+
+      case (cid, countInfo) =>
+        val clickCount = StringUtils.getFieldFromConcatString(countInfo, "\\|", Constants.FIELD_CLICK_COUNT).toLong
+        val orderCount = StringUtils.getFieldFromConcatString(countInfo, "\\|", Constants.FIELD_ORDER_COUNT).toLong
+        val payCount = StringUtils.getFieldFromConcatString(countInfo, "\\|", Constants.FIELD_PAY_COUNT).toLong
+
+
+        val sortKey = SortKey(clickCount, orderCount, payCount)
+
+        (sortKey, countInfo)
+
+
+    }
+
+
+    val top10CategoryArray: Array[(SortKey, String)] = sortKey2FullCountRDD.sortByKey(false).take(10)
+
+
+    val top10CategoryRDD = sparkSession.sparkContext.makeRDD(top10CategoryArray).map {
+
+      case (sortKey, countInfo) =>
+
+        val cid = StringUtils.getFieldFromConcatString(countInfo, "\\|", Constants.FIELD_CATEGORY_ID).toLong
+        val clickCount = sortKey.clickCout
+        val orderCount = sortKey.orderCount
+        val payCount = sortKey.payCount
+
+
+        Top10Category(taskUUID, cid, clickCount, orderCount, payCount)
+    }
+    import sparkSession.implicits._
+    top10CategoryRDD.toDF.write
+      .format("jdbc")
+      .option("url", ConfigurationManager.config.getString(Constants.JDBC_URL))
+      .option("user", ConfigurationManager.config.getString(Constants.JDBC_USER))
+      .option("password", ConfigurationManager.config.getString(Constants.JDBC_PASSWORD))
+      .option("dbtable", "top10_category")
+      .mode(SaveMode.Append)
+      .save()
+
 
   }
 
+  def getFullCount(cid2CidRDD: RDD[(Long, Long)], cid2ClickCountRDD: RDD[(Long, Long)],
+                   cid2OrderCountRDD: RDD[(Long, Long)], cid2PayCountRDD: RDD[(Long, Long)]) = {
 
 
-  def generateRandomIndexList(extarctPerDay:Long,daySessionCount:Long,hourCountMap:mutable.HashMap[String,Long],
-                              hourListMap:mutable.HashMap[String,ListBuffer[Int]]): Unit = {
+    val cid2ClickInfoRDD = cid2CidRDD.leftOuterJoin(cid2ClickCountRDD).map {
 
-    for ((hour,count) <- hourCountMap) {
+
+      case (cid, (categoryId, option)) =>
+
+        val cilckCount = if (option.isDefined) option.get else ()
+        val aggrCount = Constants.FIELD_CATEGORY_ID + "=" + cid + "|" +
+          Constants.FIELD_CLICK_COUNT + "=" + cilckCount
+
+        (cid, aggrCount)
+    }
+
+    //    cid2ClickInfoRDD.foreach(println(_))
+
+    val cid2OrderInfoRDD = cid2ClickInfoRDD.leftOuterJoin(cid2OrderCountRDD).map {
+
+
+      case (cid, (clickInfo, option)) =>
+        val orderCount = if (option.isDefined) option get else ()
+
+        val aggrInfo = clickInfo + "|" + Constants.FIELD_ORDER_COUNT + "=" + orderCount
+
+
+        (cid, aggrInfo)
+
+    }
+
+
+    val cid2PayInfoCountRDD = cid2OrderInfoRDD.leftOuterJoin(cid2PayCountRDD).map {
+
+      case (cid, (orderinfo, option)) =>
+
+        val payCount = if (option.isDefined) option.get else ()
+        val aggrInfo = orderinfo + "|" + Constants.FIELD_PAY_COUNT + "=" + payCount
+
+        (cid, aggrInfo)
+
+    }
+
+    cid2PayInfoCountRDD
+  }
+
+
+  def generateRandomIndexList(extarctPerDay: Long, daySessionCount: Long, hourCountMap: mutable.HashMap[String, Long],
+                              hourListMap: mutable.HashMap[String, ListBuffer[Int]]): Unit = {
+
+    for ((hour, count) <- hourCountMap) {
 
 
       var hourExrCount = ((count / daySessionCount.toDouble) * extarctPerDay).toInt
@@ -231,7 +317,7 @@ object SessionStat {
 
             var index = random.nextInt(count.toInt)
 
-            while(hourListMap(hour).contains(index)){
+            while (hourListMap(hour).contains(index)) {
               index = random.nextInt(count.toInt)
 
             }
@@ -245,7 +331,7 @@ object SessionStat {
 
             var index = random.nextInt(count.toInt)
 
-            while(hourListMap(hour).contains(index)){
+            while (hourListMap(hour).contains(index)) {
               index = random.nextInt(count.toInt)
 
             }
@@ -280,10 +366,10 @@ object SessionStat {
     val hourCountMap = dateHour2FullInfoRDD.countByKey()
 
     //fateHourCountMap:Map[(date,Map[(hour,count)])]
-    val dateHourCountMap = new mutable.HashMap[String, mutable.HashMap[String,Long]]()
+    val dateHourCountMap = new mutable.HashMap[String, mutable.HashMap[String, Long]]()
 
 
-    for ((dateHour,count) <- hourCountMap) {
+    for ((dateHour, count) <- hourCountMap) {
 
 
       val date = dateHour.split("_")(0)
@@ -293,7 +379,7 @@ object SessionStat {
       dateHourCountMap.get(date) match {
 
 
-        case None => dateHourCountMap(date) = new mutable.HashMap[String,Long]()
+        case None => dateHourCountMap(date) = new mutable.HashMap[String, Long]()
           dateHourCountMap(date) += (hour -> count)
 
         case Some(map) => dateHourCountMap(date) += (hour -> count)
@@ -312,9 +398,7 @@ object SessionStat {
     val dataHourExtractIndexListMap = new mutable.HashMap[String, mutable.HashMap[String, ListBuffer[Int]]]()
 
     //dateHourCountMap:Map([date,Map[(hour,count)])
-    for ((date,hourCountMap)  <- dateHourCountMap) {
-
-
+    for ((date, hourCountMap) <- dateHourCountMap) {
 
 
       val dateSessionCount = hourCountMap.values.sum
@@ -322,10 +406,10 @@ object SessionStat {
       dataHourExtractIndexListMap.get(date) match {
         case None => dataHourExtractIndexListMap(date) = new mutable.HashMap[String, ListBuffer[Int]]()
 
-          generateRandomIndexList(extractPerDay,dateSessionCount,hourCountMap,dataHourExtractIndexListMap(date))
+          generateRandomIndexList(extractPerDay, dateSessionCount, hourCountMap, dataHourExtractIndexListMap(date))
 
         case Some(map) =>
-          generateRandomIndexList(extractPerDay,dateSessionCount,hourCountMap,dataHourExtractIndexListMap(date))
+          generateRandomIndexList(extractPerDay, dateSessionCount, hourCountMap, dataHourExtractIndexListMap(date))
 
       }
 
@@ -337,9 +421,9 @@ object SessionStat {
       //dateHour2GroupRDD:RDD[(dateHour,iterableFullInfo)]
       val dateHour2GroupRDD: RDD[(String, Iterable[String])] = dateHour2FullInfoRDD.groupByKey()
       //extractSessionRDD
-     val extractSessionRDD =  dateHour2GroupRDD.flatMap{
+      val extractSessionRDD = dateHour2GroupRDD.flatMap {
 
-        case (dateHour,iterableFullInfo) =>
+        case (dateHour, iterableFullInfo) =>
           val date = dateHour.split("_")(0)
           val hour = dateHour.split("_")(1)
 
@@ -355,17 +439,17 @@ object SessionStat {
 
             if (extractList.contains(index)) {
 
-            val sessionId = StringUtils.getFieldFromConcatString(fullInfo,"\\|",Constants.FIELD_SESSION_ID)
+              val sessionId = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_SESSION_ID)
 
-            val startTime = StringUtils.getFieldFromConcatString(fullInfo,"\\|",Constants.FIELD_START_TIME)
-
-
-            val searchKeywords = StringUtils.getFieldFromConcatString(fullInfo,"\\|",Constants.FIELD_SEARCH_KEYWORDS)
-
-            val clickCategories = StringUtils.getFieldFromConcatString(fullInfo,"\\|",Constants.FIELD_CLICK_CATEGORY_IDS)
+              val startTime = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_START_TIME)
 
 
-            val extractSession = SessionRandomExtract(taskUUID,sessionId,startTime,searchKeywords,clickCategories)
+              val searchKeywords = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_SEARCH_KEYWORDS)
+
+              val clickCategories = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_CLICK_CATEGORY_IDS)
+
+
+              val extractSession = SessionRandomExtract(taskUUID, sessionId, startTime, searchKeywords, clickCategories)
 
 
               extractSessionArrayBuffer += extractSession
@@ -384,14 +468,13 @@ object SessionStat {
         .option("url", ConfigurationManager.config.getString(Constants.JDBC_URL))
         .option("user", ConfigurationManager.config.getString(Constants.JDBC_USER))
         .option("password", ConfigurationManager.config.getString(Constants.JDBC_PASSWORD))
-        .option("dbtable","session_extract")
+        .option("dbtable", "session_extract")
         .mode(SaveMode.Append)
         .save()
     }
 
 
   }
-
 
 
   def getSessionRatio(sparkSession: SparkSession, taskUUID: String, value: mutable.HashMap[String, Int]): Unit = {
@@ -445,14 +528,14 @@ object SessionStat {
     val sessionRatioRDD = sparkSession.sparkContext.makeRDD(Array(stat))
 
     import sparkSession.implicits._
-//    sessionRatioRDD.toDF().write
-//      .format("jdbc")
-//      .option("url", ConfigurationManager.config.getString(Constants.JDBC_URL))
-//      .option("user", ConfigurationManager.config.getString(Constants.JDBC_USER))
-//      .option("password", ConfigurationManager.config.getString(Constants.JDBC_PASSWORD))
-//      .option("dbtable","session_stat_ratio")
-//      .mode(SaveMode.ErrorIfExists)
-//      .save()
+    //    sessionRatioRDD.toDF().write
+    //      .format("jdbc")
+    //      .option("url", ConfigurationManager.config.getString(Constants.JDBC_URL))
+    //      .option("user", ConfigurationManager.config.getString(Constants.JDBC_USER))
+    //      .option("password", ConfigurationManager.config.getString(Constants.JDBC_PASSWORD))
+    //      .option("dbtable","session_stat_ratio")
+    //      .mode(SaveMode.ErrorIfExists)
+    //      .save()
 
 
   }
@@ -460,25 +543,51 @@ object SessionStat {
   def calculateVisitLength(vistrLength: Long, sessionAccumulator: SessionAccumulator) = {
 
 
-    if (vistrLength >=1 && vistrLength <=3) {
+    if (vistrLength >= 1 && vistrLength <= 3) {
       sessionAccumulator.add(Constants.TIME_PERIOD_1s_3s)
     }
-    else if (vistrLength >= 7 && vistrLength <=9) {sessionAccumulator.add(Constants.TIME_PERIOD_7s_9s)}
-    else if (vistrLength >= 10 && vistrLength <=30) {sessionAccumulator.add(Constants.TIME_PERIOD_10s_30s)}
-    else if (vistrLength >= 30 && vistrLength <=60) {sessionAccumulator.add(Constants.TIME_PERIOD_30s_60s)}
-    else if (vistrLength >= 60 && vistrLength <=180) {sessionAccumulator.add(Constants.TIME_PERIOD_1m_3m)}
-    else if (vistrLength >= 180 && vistrLength <=600) {sessionAccumulator.add(Constants.TIME_PERIOD_3m_10m)}
-    else if (vistrLength >= 600 && vistrLength <=1800) {sessionAccumulator.add(Constants.TIME_PERIOD_10m_30m)}
-    else if (vistrLength > 1800) {sessionAccumulator.add(Constants.TIME_PERIOD_30m)}
+    else if (vistrLength >= 7 && vistrLength <= 9) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_7s_9s)
     }
+    else if (vistrLength >= 10 && vistrLength <= 30) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_10s_30s)
+    }
+    else if (vistrLength >= 30 && vistrLength <= 60) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_30s_60s)
+    }
+    else if (vistrLength >= 60 && vistrLength <= 180) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_1m_3m)
+    }
+    else if (vistrLength >= 180 && vistrLength <= 600) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_3m_10m)
+    }
+    else if (vistrLength >= 600 && vistrLength <= 1800) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_10m_30m)
+    }
+    else if (vistrLength > 1800) {
+      sessionAccumulator.add(Constants.TIME_PERIOD_30m)
+    }
+  }
 
   def calculateStepLength(stepLength: Long, sessionAccumulator: SessionAccumulator) = {
-    if (stepLength >=1 && stepLength <=3) {sessionAccumulator.add(Constants.STEP_PERIOD_1_3)}
-    else if (stepLength >=4 && stepLength <=6) {sessionAccumulator.add(Constants.STEP_PERIOD_4_6)}
-    else if (stepLength >=7 && stepLength <=9) {sessionAccumulator.add(Constants.STEP_PERIOD_7_9)}
-    else if (stepLength >=10 && stepLength <=30) {sessionAccumulator.add(Constants.STEP_PERIOD_10_30)}
-    else if (stepLength >=30 && stepLength <=60) {sessionAccumulator.add(Constants.STEP_PERIOD_30_60)}
-    else if (stepLength > 60) {sessionAccumulator.add(Constants.STEP_PERIOD_60)}
+    if (stepLength >= 1 && stepLength <= 3) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_1_3)
+    }
+    else if (stepLength >= 4 && stepLength <= 6) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_4_6)
+    }
+    else if (stepLength >= 7 && stepLength <= 9) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_7_9)
+    }
+    else if (stepLength >= 10 && stepLength <= 30) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_10_30)
+    }
+    else if (stepLength >= 30 && stepLength <= 60) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_30_60)
+    }
+    else if (stepLength > 60) {
+      sessionAccumulator.add(Constants.STEP_PERIOD_60)
+    }
   }
 
   def getSessionFilteredRDD(taskParam: JSONObject, sessionId2FullInfoRDD: RDD[(String, String)], sessionAccumulator: SessionAccumulator) = {
@@ -501,51 +610,49 @@ object SessionStat {
 
 
     if (filterInfo.endsWith("\\|")) {
-      filterInfo = filterInfo.substring(0, filterInfo.length - 1)  }
+      filterInfo = filterInfo.substring(0, filterInfo.length - 1)
+    }
 
 
-      sessionId2FullInfoRDD.filter {
+    sessionId2FullInfoRDD.filter {
 
 
-        case (sessId, fullInfo) =>
-          var sucess = true
-          if (!ValidUtils.between(fullInfo, Constants.FIELD_AGE, filterInfo, Constants.PARAM_START_AGE, Constants.PARAM_END_AGE)) {
-            sucess = false
+      case (sessId, fullInfo) =>
+        var sucess = true
+        if (!ValidUtils.between(fullInfo, Constants.FIELD_AGE, filterInfo, Constants.PARAM_START_AGE, Constants.PARAM_END_AGE)) {
+          sucess = false
 
 
-          } else if (!ValidUtils.in(fullInfo, Constants.FIELD_PROFESSIONAL, filterInfo, Constants.PARAM_PROFESSIONALS)) {
-            sucess = false
-          } else if (!ValidUtils.in(fullInfo, Constants.FIELD_CITY, filterInfo, Constants.PARAM_CITIES)) {
-            sucess = false
-          } else if (!ValidUtils.equal(fullInfo, Constants.FIELD_SEX, filterInfo, Constants.PARAM_SEX)) {
-            sucess = false
-          } else if (!ValidUtils.in(fullInfo, Constants.FIELD_SEARCH_KEYWORDS, filterInfo, Constants.FIELD_SEARCH_KEYWORDS)) {
-            sucess = false
-          } else if (!ValidUtils.in(fullInfo, Constants.FIELD_CLICK_CATEGORY_IDS, filterInfo, Constants.FIELD_CLICK_CATEGORY_IDS)) {
-            sucess = false
-          }
+        } else if (!ValidUtils.in(fullInfo, Constants.FIELD_PROFESSIONAL, filterInfo, Constants.PARAM_PROFESSIONALS)) {
+          sucess = false
+        } else if (!ValidUtils.in(fullInfo, Constants.FIELD_CITY, filterInfo, Constants.PARAM_CITIES)) {
+          sucess = false
+        } else if (!ValidUtils.equal(fullInfo, Constants.FIELD_SEX, filterInfo, Constants.PARAM_SEX)) {
+          sucess = false
+        } else if (!ValidUtils.in(fullInfo, Constants.FIELD_SEARCH_KEYWORDS, filterInfo, Constants.FIELD_SEARCH_KEYWORDS)) {
+          sucess = false
+        } else if (!ValidUtils.in(fullInfo, Constants.FIELD_CLICK_CATEGORY_IDS, filterInfo, Constants.FIELD_CLICK_CATEGORY_IDS)) {
+          sucess = false
+        }
 
-          if (sucess) {
+        if (sucess) {
 
-            //acc.add()
-            sessionAccumulator.add(Constants.SESSION_COUNT)
-
-
-            val vistrLength = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_VISIT_LENGTH).toLong
-            val stepLength = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_STEP_LENGTH).toLong
+          //acc.add()
+          sessionAccumulator.add(Constants.SESSION_COUNT)
 
 
-            calculateVisitLength(vistrLength, sessionAccumulator)
-            calculateStepLength(stepLength, sessionAccumulator)
+          val vistrLength = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_VISIT_LENGTH).toLong
+          val stepLength = StringUtils.getFieldFromConcatString(fullInfo, "\\|", Constants.FIELD_STEP_LENGTH).toLong
 
 
-          }
-
-          sucess
-      }
+          calculateVisitLength(vistrLength, sessionAccumulator)
+          calculateStepLength(stepLength, sessionAccumulator)
 
 
+        }
 
+        sucess
+    }
 
 
   }
@@ -656,21 +763,20 @@ object SessionStat {
 
 
   }
+
   def getOriActionRDD(sparkSession: SparkSession, taskParam: JSONObject) = {
 
-    val startDate = ParamUtils.getParam(taskParam,Constants.PARAM_START_DATE)
-    val endDate = ParamUtils.getParam(taskParam,Constants.PARAM_END_DATE)
+    val startDate = ParamUtils.getParam(taskParam, Constants.PARAM_START_DATE)
+    val endDate = ParamUtils.getParam(taskParam, Constants.PARAM_END_DATE)
 
-    val sql ="select * from user_visit_action where date>='" + startDate+"' and date<='" + endDate+ "'"
-//    val sql ="select * from user_visit_action"
+    val sql = "select * from user_visit_action where date>='" + startDate + "' and date<='" + endDate + "'"
+    //    val sql ="select * from user_visit_action"
 
 
     import sparkSession.implicits._
 
-     sparkSession.sql(sql).as[UserVisitAction].rdd
+    sparkSession.sql(sql).as[UserVisitAction].rdd
 
 
   }
-
-
 }
